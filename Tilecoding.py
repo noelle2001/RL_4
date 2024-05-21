@@ -3,10 +3,9 @@ import numpy as np
 
 
 class TileCoder:
-    def __init__(self, tiles_per_dim, value_limits, tilings, offset=lambda n: 2 * np.arange(n) + 1):
+    def __init__(self, tiles_per_dim, value_limits, tilings):
         tiling_dims = np.array(np.ceil(tiles_per_dim), dtype=int) + 1
-        self._offsets = offset(len(tiles_per_dim)) * \
-            np.repeat([np.arange(tilings)], len(tiles_per_dim), 0).T / float(tilings) % 1
+        self._offsets = np.repeat([np.arange(tilings)], len(tiles_per_dim), 0).T / float(tilings)
         self._limits = np.array(value_limits)
         self._norm_dims = np.array(tiles_per_dim) / (self._limits[:, 1] - self._limits[:, 0])
         self._tile_base_ind = np.prod(tiling_dims) * np.arange(tilings)
