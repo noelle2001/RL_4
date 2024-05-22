@@ -1,6 +1,6 @@
 import numpy as np
 from Tilecoding import TileCoder
-from Helper import FuncApproxPlot, MSECurvePlot
+from Helper import FuncApproxPlot, MSECurvePlot, LearningCurvePlot, smooth
 import gymnasium as gym
 
 
@@ -24,21 +24,20 @@ class FuncApproxAgent:
 
 
 class TiledQLearningAgent:
-    def __init__(self, n_actions, tiles_per_dim, lims, tilings, epsilon, alpha=0.1, gamma=1):
+    def __init__(self, n_actions, tiles_per_dim, lims, tilings, alpha, gamma):
         self.n_actions = n_actions
         self.tiles_per_dim = tiles_per_dim
         self.tilings = tilings
-        self.epsilon = epsilon
         self.alpha = alpha
         self.gamma = gamma
         self.T = TileCoder(tiles_per_dim, lims, tilings)
         self.w_vectors = np.zeros((self.T.n_tiles, n_actions))  # Initialize Q-table with zeros
         pass
 
-    def select_action(self, state):  # ϵ-greedy policy
-        tiles = self.T[state]
-        best_action = np.argmax(self.w_vectors[tiles].sum(axis=0))
-        if np.random.random() > self.epsilon:
+    def select_action(self, state, epsilon):  # ϵ-greedy policy
+        tiles_state = self.T[state]
+        best_action = np.argmax(self.w_vectors[tiles_state].sum(axis=0))
+        if np.random.random() > epsilon:
             action = best_action
         else:
             action = np.random.choice([x for x in range(self.n_actions) if x != best_action])
@@ -48,10 +47,11 @@ class TiledQLearningAgent:
         tiles_state = self.T[state]
         tiles_next_state = self.T[next_state]
         best_next_action = np.argmax(self.w_vectors[tiles_next_state].sum(axis=0))
-        td_target = reward + self.gamma * self.q_table[next_state, best_next_action]
-        td_delta = td_target - self.q_table[state, action]
-        self.q_table[state, action] += self.alpha * td_delta
+        td_target = reward + self.gamma * self.w_vectors[tiles_next_state, best_next_action]
+        td_delta = td_target - self.w_vectors[tiles_state, action]
+        self.w_vectors[tiles_state, action] += self.alpha * td_delta
         pass
+
 
 ############################
 # sin(x*2pi) approxamation #
@@ -85,7 +85,7 @@ def experiment_1():
     target_eval = target_function(x_eval)
     for batch in range(batch_number):
         for _ in range(batch_size):
-            x = lims[0][0] + np.random.rand() * lims[0][1] - lims[0][0]
+            x = lims[0][0] + np.random.rand() * (lims[0][1] - lims[0][0])
             target = target_function(x)
             for agent in agents:
                 agent.update(x, target)
@@ -110,7 +110,7 @@ def experiment_2():
     def target_function(x, y):
         return np.sin(x*2*np.pi)+np.cos(y*2*np.pi)
 
-    lims = [(0, 1), (0, 1)]
+    lims = [(1, 2), (1, 2)]
 
     # Single tiling of 20 tiles per dim (21*21=441 tiles total)
     tiles_per_dim = [20, 20]
@@ -147,8 +147,8 @@ def experiment_2():
     for batch in range(batch_number):
         # Training for the function approxamation using random samples
         for _ in range(batch_size):
-            x = lims[0][0] + np.random.rand() * lims[0][1] - lims[0][0]
-            y = lims[1][0] + np.random.rand() * lims[1][1] - lims[1][0]
+            x = lims[0][0] + np.random.rand() * (lims[0][1] - lims[0][0])
+            y = lims[1][0] + np.random.rand() * (lims[1][1] - lims[1][0])
             target = target_function(x, y)
             for agent in agents:
                 agent.update((x, y), target)
@@ -163,20 +163,76 @@ def experiment_2():
         for agent, eval_rmse in zip(agents, agents_eval_rmse):
             eval_rmse.append(np.sqrt(batch_mse[agent] / (len(x_eval) * len(y_eval))))
     # Plot mse learning curves
-    plot = MSECurvePlot("RMSE Learning Curve for 2D Function Approxamation")
+    plot = MSECurvePlot("RMSE Learning Curve for 2D Function Approximation")
     for agent, eval_rmse in zip(agents, agents_eval_rmse):
         plot.add_curve(batch_timesteps, eval_rmse,
                        label=f"tiles: {agent.tiles_per_dim[0]}, tilings: {agent.tilings}, n_tiles: {agent.T.n_tiles}")
     plot.save("2d_mse.png")
 
+###############################
+# Q-Learning with Tile Coding #
+###############################
+
+
+def run_repetitions(n_repetitions, n_episodes, tiles, tilings, epsilon=0.1, alpha=0.1, gamma=1):
+    print("Running repetitions with the following settings:")
+    print(locals())
+
+    env = gym.make('MountainCar-v0')
+    n_actions = env.action_space.n
+    lims = np.array([env.observation_space.low, env.observation_space.high]).T
+    tiles_per_dim = [tiles] * env.observation_space.shape[0]
+
+    episode_returns = np.zeros((n_repetitions, n_episodes))
+
+    for rep in range(n_repetitions):
+        agent = TiledQLearningAgent(n_actions, tiles_per_dim, lims, tilings, alpha, gamma)
+        for ep in range(n_episodes):
+            s, info = env.reset()
+            if ep % 100 == 0:
+                print(f"Running repitition {rep+1:2}, Finished {ep:4} episodes", end="\r")
+            done = False
+            while not done:
+                a = agent.select_action(s, epsilon)  # Sample action
+                s_next, r, done, trunc, info = env.step(a)  # Simulate environment
+                episode_returns[rep, ep] += r
+                agent.update(s, a, r, s_next)
+                s = s_next
+
+    # Compute average evaluations over all repetitions
+    mean_episode_returns = np.mean(episode_returns, axis=0)
+    return mean_episode_returns
+
 
 def experiment_3():
-    env = gym.make("Acrobot-v1")
-    print(np.array([env.observation_space.low, env.observation_space.high]).T)
-    print(env.action_space.n)
+    n_repetitions = 10
+    n_episodes = 1000
+    gamma = 1
+    alpha = 0.1
+    epsilon = 0.1
+
+    tiling_settings = [(5, 1), (10, 1), (20, 1), (10, 2), (5, 4)]
+    episode_returns = []
+
+    smoothing_window = 31
+
+    for tiles, tilings in tiling_settings:
+        episode_returns.append(run_repetitions(n_repetitions, n_episodes, tiles, tilings, epsilon, alpha, gamma))
+
+    plot = LearningCurvePlot("Mountain Car Q-Learning with 1 tilings")
+    for (tiles, tilings), episode_return in zip(tiling_settings[:3], episode_returns[:3]):
+        plot.add_curve(range(1, n_episodes+1), smooth(episode_return, smoothing_window),
+                       label=f"tiles: {tiles}, tilings: {tilings}, n_tiles: {(tiles+1)**2*tilings}")
+    plot.save(name=f"mountain_car_qlearning_rep{n_repetitions}_1tiling.png")
+
+    plot = LearningCurvePlot("Mountain Car Q-Learning with 20 total bins")
+    for (tiles, tilings), episode_return in zip(tiling_settings[-3:], episode_returns[-3:]):
+        plot.add_curve(range(1, n_episodes+1), smooth(episode_return, smoothing_window),
+                       label=f"tiles: {tiles}, tilings: {tilings}, n_tiles: {(tiles+1)**2*tilings}")
+    plot.save(name=f"mountain_car_qlearning_rep{n_repetitions}_20bins.png")
 
 
 if __name__ == '__main__':
     # experiment_1()
-    # experiment_2()
-    experiment_3()
+    experiment_2()
+    # experiment_3()
